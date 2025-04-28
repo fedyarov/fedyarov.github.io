@@ -7,7 +7,7 @@ permalink: /posts/first
 # Questions to CVE-2025-32743 and CVE-2025-32366
 This post provide some disproving research results of CVE-2025-32743. 
 
-## Try to exploit the vulnerability with steps from original article
+## Exploit the vulnerability with steps from original article
 **Setup** 
 1. qemu with Ubuntu-22 as VM1;
 2. VM1: downloaded source code of connman from upstream repository https://git.kernel.org/pub/scm/network/connman/connman.git;
@@ -52,9 +52,15 @@ nslookup -vc tesla
 
 In video proof in the original article step 7 lead to connman crash.
 
-**Observations about the original steps and video proof**
-1. Running of PoC python script with `--truncate 254` cannot lead to add tricky DNS response to connman dnsproxy cache
+## Key points from the original article
+1. To trigger the vulnerability connman dnsproxy needs to cache truncated DNS response and then this somehow lead to `NULL` or emptry `""` string in `lookup` pointer which lead to memory corruption and SIGSEGV.
 
+## Observations about key points and video proof
+**1. There is no memory corruptions or somethink bad if `dnsproxy.c:cache_update` doesn't executed well**
+
+If it's UDP event or TCP event than DNS reply will be forwarded as is to client in `dnsproxy.c:forward_dns_reply` when `cache_update` will be called to add DNS responce to cache.
+
+**2. Running of PoC python script with `--truncate 254` cannot lead to add tricky DNS response to connman dnsproxy cache**
 
 `--truncate 254` is incorrect value because we cut too much bytes from DNS response and `dnsproxy.c:parse_responce` return -EINVAL because we missing 3 bytes to pass the condition
 ```
@@ -99,11 +105,22 @@ def build_answer_record(i):
     return bytes(rr)
 ```
 
-So, for now DNS answer can be added to connman dnsproxy cache with `rdlength` bytes from stack which is complete proof of CVE-2025-32366.
+So, for now DNS answer can be added to connman dnsproxy cache with `rdlength` bytes from stack and that cached DNS answer can be getted if client send DNS request with question section return from DNS which is complete proof of CVE-2025-32366.
 
-2. `lookup` string in `ns_resolv` cannot be NULL or empty.
+**3. `lookup` string in `ns_resolv` cannot be NULL or empty.**
 
-Even if DNS client send empty string that connman dnsproxy will add `'.'` to question string.
+`ns_resolv` can be called from:
+1. `dnsproxy.c:tcp_server_event()`
+
+`struct request_data` here getted from `request_list`. To `request_list` some requests can be added from `read_tcp_data()` when field `name` getted from `parse_request()`. In `parse_request()` variable `name[0]` sets to '\0' and then there is `strcat(name, ".");` to end of the `name`. 
+
+3. `dnsproxy.c:resolv()`
+
+`resolv()` here called from `udp_listener_event()` with `name` getted from `parse_request()`.
+
+4. `dnsproxy.c:flush_requests()`
+
+which called from `__connman_dnsproxy_append()`
 
 ## Python code for sending truncated DNS responses
 poc.py
